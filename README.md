@@ -77,18 +77,54 @@ uv run flights-booking-mcp
 | Tool | Description |
 |---|---|
 | `search_bookable_offers` | Search flights and get Duffel-compatible `offer_id`s |
-| `book_flight` | Book a flight by Duffel `offer_id` + passenger details |
+| `book_flight` | Book a flight — instant or hold, with or without saved profile |
+| `confirm_booking` | Confirm a held booking (reserved via `book_flight(hold=True)`) |
 | `get_booking_status` | Check booking status / PNR |
+| `list_bookings` | View recent booking history |
 | `void_booking` | Cancel a booking within the void window |
 
-## Booking flow
+### Profile (save passenger details once)
+
+| Tool | Description |
+|---|---|
+| `save_travel_profile` | Save your passenger details locally (name, DOB, etc.) |
+| `show_travel_profile` | View your saved profile |
+
+## Booking flows
+
+### Instant (default) — book and pay in one step
 
 ```
-1. search_flights(ICN → NRT, July 1)     ← free Google Flights, browse prices
-2. search_bookable_offers(ICN → NRT, July 1)  ← get bookable offer_ids from Duffel
-3. book_flight(off_xxx, passengers)       ← creates order, returns booking ref
-4. get_booking_status(ord_xxx)            ← check PNR, ticket status
+1. save_travel_profile(given_name="Stefan", ...)     ← save once
+2. search_flights(ICN → NRT, July 1)                 ← browse free Google Flights
+3. search_bookable_offers(ICN → NRT, July 1)         ← get bookable offer_ids
+4. book_flight(off_xxx)                              ← auto-fills from profile
 ```
+
+### Hold + Confirm — two-step with confirmation gate
+
+```
+1. book_flight(off_xxx, hold=True)              ← reserves without paying (~30 min)
+2. confirm_booking(ord_xxx)                     ← confirm and pay
+```
+
+The confirmation step is a manual gate — no money moves until you call `confirm_booking`. Perfect for when you want to review before committing.
+
+### Save your profile
+
+```python
+save_travel_profile(
+    given_name="Stefan",
+    family_name="Test",
+    title="mr",
+    gender="m",
+    born_on="1990-01-15",
+    phone_number="+821012345678",
+    email="stefan@example.com"
+)
+```
+
+After this, `book_flight` only needs the `offer_id` — everything else auto-fills.
 
 ## Duffel setup
 
@@ -96,7 +132,7 @@ uv run flights-booking-mcp
 2. Use your auto-generated test key (`duffel_test_...`) — works for search and test bookings
 3. For real bookings: complete verification + add payment info → get a live key
 
-In test mode, use `"type": "balance"` for payments — no real charges.
+In test mode, `payment_type="balance"` prevents any real charges.
 
 ## License
 

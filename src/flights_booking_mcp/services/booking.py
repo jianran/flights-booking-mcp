@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..api.client import DuffelClient
 from ..config import has_duffel
+from .profile import load_profile, save_profile, profile_exists, merge_with_profile
 
 logger = logging.getLogger(__name__)
 
@@ -14,39 +15,115 @@ from .search import mcp
 
 
 @mcp.tool()
-async def book_flight(
-    offer_id: str,
-    given_name: str,
-    family_name: str,
+async def save_travel_profile(
+    given_name: str = "",
+    family_name: str = "",
     title: str = "mr",
     gender: str = "m",
     born_on: str = "",
     phone_number: str = "",
     email: str = "",
+) -> str:
+    """Save your passenger details to a local profile file (~/.config/flights-booking-mcp/profile.json).
+    
+    Once saved, book_flight will auto-fill these values so you only need to provide
+    the offer_id for future bookings.
+    
+    Args:
+        given_name: First name (as on passport)
+        family_name: Last name (as on passport)
+        title: mr, ms, mrs, or mx
+        gender: m or f
+        born_on: Date of birth in YYYY-MM-DD (e.g., 1990-01-15)
+        phone_number: Phone with country code (e.g., +821012345678)
+        email: Email address
+    """
+    profile = {k: v for k, v in {
+        "given_name": given_name,
+        "family_name": family_name,
+        "title": title,
+        "gender": gender,
+        "born_on": born_on,
+        "phone_number": phone_number,
+        "email": email,
+    }.items() if v}
+
+    if not profile:
+        return json.dumps({"error": "At least one field must be provided"}, indent=2)
+
+    save_profile(profile)
+    return json.dumps({
+        "status": "saved",
+        "path": "~/.config/flights-booking-mcp/profile.json",
+        "fields": list(profile.keys()),
+    }, indent=2)
+
+
+@mcp.tool()
+async def show_travel_profile() -> str:
+    """Show your saved travel profile (passenger details)."""
+    profile = load_profile()
+    if not profile:
+        return json.dumps({"status": "no_profile",
+                           "message": "No profile saved. Use save_travel_profile to create one."}, indent=2)
+    return json.dumps({"status": "found", "profile": profile}, indent=2)
+
+
+@mcp.tool()
+async def book_flight(
+    offer_id: str,
+    given_name: str = "",
+    family_name: str = "",
+    title: str = "",
+    gender: str = "",
+    born_on: str = "",
+    phone_number: str = "",
+    email: str = "",
     payment_type: str = "balance",
+    hold: bool = False,
 ) -> str:
     """Book a flight by creating a Duffel order.
     
-    Requires DUFFEL_API_TOKEN. In test mode (default), use payment_type="balance"
-    — no real charges occur.
+    If you've saved your profile via save_travel_profile, most fields auto-fill.
+    In test mode, payment_type="balance" means no real charges.
+    Set hold=True to reserve without paying (30 min expiry, then confirm_booking).
     
     Args:
         offer_id: Duffel offer ID from search_bookable_offers (starts with off_)
         given_name: Passenger's first name (as on passport)
         family_name: Passenger's last name (as on passport)
-        title: mr, ms, mrs, or mx (default: mr)
-        gender: m or f (default: m)
-        born_on: Date of birth in YYYY-MM-DD format (e.g., 1990-01-15)
+        title: mr, ms, mrs, or mx
+        gender: m or f
+        born_on: Date of birth in YYYY-MM-DD (e.g., 1990-01-15)
         phone_number: Phone with country code (e.g., +821012345678)
         email: Email address
-        payment_type: "balance" for test mode, "arc_bsp_cash" for live (default: balance)
+        payment_type: "balance" for test, "arc_bsp_cash" for live (default: balance)
+        hold: If True, reserve without payment (use confirm_booking later). Default: False.
     """
     if not has_duffel():
         return json.dumps({
             "error": "DUFFEL_API_TOKEN not configured. Set it in .env or env vars.",
         }, indent=2)
 
-    logger.info(f"Booking offer {offer_id}")
+    # Merge with saved profile
+    kwargs = merge_with_profile({
+        "given_name": given_name,
+        "family_name": family_name,
+        "title": title,
+        "gender": gender,
+        "born_on": born_on,
+        "phone_number": phone_number,
+        "email": email,
+    })
+
+    missing = [k for k in ["given_name", "family_name", "born_on", "phone_number", "email"]
+               if not kwargs.get(k)]
+    if missing:
+        msg = (f"Missing required fields: {', '.join(missing)}. "
+               "Provide them directly or save via save_travel_profile first.")
+        return json.dumps({"error": msg}, indent=2)
+
+    logger.info(f"Booking offer {offer_id} (hold={hold})")
 
     try:
         client = DuffelClient()
@@ -58,33 +135,44 @@ async def book_flight(
         if not offer.get("passengers"):
             return json.dumps({"error": "No passenger info found in offer"}, indent=2)
 
-        # Get the passenger ID from the offer
         passenger_id = offer["passengers"][0]["id"]
         total_amount = offer.get("total_amount", "0.00")
         total_currency = offer.get("total_currency", "USD")
 
         passengers = [{
             "id": passenger_id,
-            "title": title,
-            "given_name": given_name,
-            "family_name": family_name,
-            "gender": gender,
-            "born_on": born_on,
-            "phone_number": phone_number,
-            "email": email,
+            "title": kwargs["title"] or "mr",
+            "given_name": kwargs["given_name"],
+            "family_name": kwargs["family_name"],
+            "gender": kwargs["gender"] or "m",
+            "born_on": kwargs["born_on"],
+            "phone_number": kwargs["phone_number"],
+            "email": kwargs["email"],
         }]
 
-        result = await client.create_order(
-            offer_id=offer_id,
-            passengers=passengers,
-            payment_type=payment_type,
-            payment_currency=total_currency,
-            payment_amount=total_amount,
-        )
+        if hold:
+            # Duffel hold flow: create order with payment_type="hold", then confirm later
+            result = await client.create_order(
+                offer_id=offer_id,
+                passengers=passengers,
+                payment_type="hold",
+                payment_currency=total_currency,
+                payment_amount=total_amount,
+            )
+        else:
+            result = await client.create_order(
+                offer_id=offer_id,
+                passengers=passengers,
+                payment_type=payment_type,
+                payment_currency=total_currency,
+                payment_amount=total_amount,
+            )
 
         order = result.get("data", {})
-        return json.dumps({
-            "status": "success",
+        is_hold = order.get("type") == "hold" or hold
+
+        response = {
+            "status": "held" if is_hold else "confirmed",
             "order_id": order.get("id"),
             "booking_reference": order.get("booking_reference"),
             "total_amount": order.get("total_amount"),
@@ -100,12 +188,94 @@ async def book_flight(
                 }
                 for s in order.get("slices", [])
             ],
-            "payment_status": order.get("payment_status"),
             "live_mode": order.get("live_mode", False),
-        }, indent=2)
+        }
+
+        if is_hold:
+            response["next_step"] = "Call confirm_booking(order_id) to confirm and pay."
+
+        return json.dumps(response, indent=2)
 
     except Exception as e:
         logger.error(f"Booking error: {e}")
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def confirm_booking(order_id: str, payment_type: str = "balance") -> str:
+    """Confirm a held booking and process payment.
+    
+    Use this after book_flight(..., hold=True). The offer is reserved for ~30 min.
+    
+    Args:
+        order_id: Duffel order ID from book_flight (starts with ord_)
+        payment_type: "balance" for test mode, "arc_bsp_cash" for live (default: balance)
+    """
+    if not has_duffel():
+        return json.dumps({"error": "DUFFEL_API_TOKEN not configured"}, indent=2)
+
+    logger.info(f"Confirming order {order_id}")
+
+    try:
+        client = DuffelClient()
+
+        # Get the order to find the amount
+        order_data = await client.get_order(order_id)
+        order = order_data.get("data", {})
+
+        if order.get("type") != "hold":
+            return json.dumps({
+                "info": "Order is not in hold status. Current type: " + order.get("type", "unknown"),
+                "order_id": order_id,
+            }, indent=2)
+
+        total_amount = order.get("total_amount", "0.00")
+        total_currency = order.get("total_currency", "USD")
+
+        # Pay the held order via Duffel pay endpoint
+        import httpx
+        from ..config import get_duffel_token
+
+        token = get_duffel_token()
+        headers = {
+            "Accept": "application/json",
+            "Duffel-Version": "v2",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "data": {
+                "payments": [{
+                    "type": payment_type,
+                    "currency": total_currency,
+                    "amount": total_amount,
+                }]
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as hc:
+            resp = await hc.post(
+                f"https://api.duffel.com/air/orders/{order_id}/actions/pay",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+
+        updated = result.get("data", {})
+        return json.dumps({
+            "status": "confirmed",
+            "order_id": updated.get("id"),
+            "booking_reference": updated.get("booking_reference"),
+            "total_amount": updated.get("total_amount"),
+            "total_currency": updated.get("total_currency"),
+            "payment_status": updated.get("payment_status"),
+            "live_mode": updated.get("live_mode", False),
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Confirm booking error: {e}")
         return json.dumps({"error": str(e)}, indent=2)
 
 
