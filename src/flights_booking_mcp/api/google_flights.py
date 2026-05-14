@@ -1,4 +1,4 @@
-"""Google Flights client using fast-flights library."""
+"""Google Flights client using fast-flights library (v2 API)."""
 
 import logging
 from typing import Optional
@@ -21,53 +21,56 @@ def search_google_flights(
     No API key required.
     """
     try:
-        from fast_flights import FlightData, Passengers, Trip, search_flights
+        from fast_flights import FlightData, Passengers, get_flights
     except ImportError:
-        logger.warning("fast-flights not installed, falling back to Google Flights browser fetch")
-        return _search_google_fallback(origin, destination, date, return_date, adults, cabin_class)
+        logger.warning("fast-flights not installed")
+        return []
 
-    trip_type = "round-trip" if return_date else "one-way"
+    seat_map = {
+        "economy": "economy",
+        "premium_economy": "premium-economy",
+        "business": "business",
+        "first": "first",
+    }
+    seat = seat_map.get(cabin_class, "economy")
+
+    if return_date:
+        trip_type = "round-trip"
+        flight_data = [
+            FlightData(date=date, from_airport=origin, to_airport=destination),
+            FlightData(date=return_date, from_airport=destination, to_airport=origin),
+        ]
+    else:
+        trip_type = "one-way"
+        flight_data = [
+            FlightData(
+                date=date,
+                from_airport=origin,
+                to_airport=destination,
+                max_stops=max_stops,
+            )
+        ]
 
     try:
-        # Map cabin class
-        seat_type_map = {
-            "economy": "economy",
-            "premium_economy": "premium_economy",
-            "business": "business",
-            "first": "first",
-        }
-        seat = seat_type_map.get(cabin_class, "economy")
-
-        result = search_flights(
-            trip=Trip(
-                TripData=[
-                    FlightData(
-                        date=date,
-                        source=origin,
-                        destination=destination,
-                    ),
-                ],
-                date=date,
-                return_date=return_date,
-                trip_type=trip_type,
-            ),
+        result = get_flights(
+            flight_data=flight_data,
+            trip=trip_type,
             passengers=Passengers(adults=adults),
-            seat_type=seat,
+            seat=seat,
             max_stops=max_stops,
         )
 
         flights = []
-        if result and hasattr(result, 'flights') and result.flights:
+        if result and result.flights:
             for f in result.flights[:30]:
                 flights.append({
-                    "airline": f.get("airline", "Unknown"),
-                    "flight_number": f.get("flight_number", ""),
-                    "departure_time": f.get("departure_time", ""),
-                    "arrival_time": f.get("arrival_time", ""),
-                    "duration": f.get("duration", ""),
-                    "stops": f.get("stops", 0),
-                    "price": f.get("price", ""),
-                    "currency": f.get("currency", "USD"),
+                    "airline": f.name,
+                    "departure": f.departure,
+                    "arrival": f.arrival,
+                    "duration": f.duration,
+                    "stops": f.stops,
+                    "price": f.price,
+                    "is_best": getattr(f, "is_best", False),
                     "origin": origin,
                     "destination": destination,
                     "date": date,
@@ -79,13 +82,3 @@ def search_google_flights(
     except Exception as e:
         logger.error(f"Google Flights search error: {e}")
         return []
-
-
-def _search_google_fallback(
-    origin: str, destination: str, date: str,
-    return_date: Optional[str] = None,
-    adults: int = 1, cabin_class: str = "economy",
-) -> list[dict]:
-    """Fallback: return an instructional message when fast-flights can't be used."""
-    logger.info("fast-flights unavailable, returning empty results")
-    return []
