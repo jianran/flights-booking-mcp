@@ -8,6 +8,7 @@ from ..config import get_duffel_token
 logger = logging.getLogger(__name__)
 
 DUFFEL_BASE = "https://api.duffel.com/air"
+DUFFEL_VERSION = "v2"
 
 
 class DuffelClient:
@@ -18,7 +19,7 @@ class DuffelClient:
         self._headers = {
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
-            "Duffel-Version": "v2",
+            "Duffel-Version": DUFFEL_VERSION,
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
         }
@@ -94,7 +95,11 @@ class DuffelClient:
         payment_currency: str = "USD",
         payment_amount: str | None = None,
     ) -> dict:
-        """Create a booking order."""
+        """Create a booking order.
+        
+        The passengers list must include the 'id' field from the offer's passenger.
+        In test mode, use payment_type="balance" — no real charges occur.
+        """
         self._check_token()
 
         if payment_amount is None:
@@ -106,7 +111,8 @@ class DuffelClient:
 
         order_data = {
             "data": {
-                "selected_offers": [{"offer_id": offer_id}],
+                "type": "instant",
+                "selected_offers": [offer_id],
                 "passengers": passengers,
                 "payments": [
                     {

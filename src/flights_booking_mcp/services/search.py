@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from ..models import FlightSearch, MultiCityRequest, OfferDetails
 from ..models.time_specs import TimeSpec
 from ..api.google_flights import search_google_flights
-from ..api.client import DuffelClient
+from ..api.client import DUFFEL_VERSION, DuffelClient
 from ..config import has_duffel
 
 logger = logging.getLogger(__name__)

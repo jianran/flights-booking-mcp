@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import List
 from mcp.server.fastmcp import FastMCP
 
 from ..api.client import DuffelClient
@@ -17,56 +16,70 @@ from .search import mcp
 @mcp.tool()
 async def book_flight(
     offer_id: str,
-    passengers: list[dict],
+    given_name: str,
+    family_name: str,
+    title: str = "mr",
+    gender: str = "m",
+    born_on: str = "",
+    phone_number: str = "",
+    email: str = "",
     payment_type: str = "balance",
-    payment_currency: str = "USD",
 ) -> str:
     """Book a flight by creating a Duffel order.
     
-    Requires DUFFEL_API_TOKEN. In test mode, use payment_type="balance"
+    Requires DUFFEL_API_TOKEN. In test mode (default), use payment_type="balance"
     — no real charges occur.
     
     Args:
         offer_id: Duffel offer ID from search_bookable_offers (starts with off_)
-        passengers: List of passenger dicts, each with:
-            - title: mr/ms/mrs/mx
-            - given_name: first name
-            - family_name: last name
-            - gender: m or f
-            - born_on: YYYY-MM-DD
-            - phone_number: +821012345678
-            - email: email address
-        payment_type: "balance" for test mode, "arc_bsp_cash" for live
-        payment_currency: ISO currency code (default: USD)
+        given_name: Passenger's first name (as on passport)
+        family_name: Passenger's last name (as on passport)
+        title: mr, ms, mrs, or mx (default: mr)
+        gender: m or f (default: m)
+        born_on: Date of birth in YYYY-MM-DD format (e.g., 1990-01-15)
+        phone_number: Phone with country code (e.g., +821012345678)
+        email: Email address
+        payment_type: "balance" for test mode, "arc_bsp_cash" for live (default: balance)
     """
     if not has_duffel():
         return json.dumps({
             "error": "DUFFEL_API_TOKEN not configured. Set it in .env or env vars.",
         }, indent=2)
 
-    logger.info(f"Booking offer {offer_id} for {len(passengers)} passenger(s)")
+    logger.info(f"Booking offer {offer_id}")
 
     try:
         client = DuffelClient()
 
-        # Validate and format passengers
-        formatted_passengers = []
-        for p in passengers:
-            formatted_passengers.append({
-                "title": p["title"],
-                "given_name": p["given_name"],
-                "family_name": p["family_name"],
-                "gender": p["gender"],
-                "born_on": p["born_on"],
-                "phone_number": p["phone_number"],
-                "email": p["email"],
-            })
+        # Fetch offer to get passenger_id and price
+        offer_data = await client.get_offer(offer_id)
+        offer = offer_data.get("data", {})
+
+        if not offer.get("passengers"):
+            return json.dumps({"error": "No passenger info found in offer"}, indent=2)
+
+        # Get the passenger ID from the offer
+        passenger_id = offer["passengers"][0]["id"]
+        total_amount = offer.get("total_amount", "0.00")
+        total_currency = offer.get("total_currency", "USD")
+
+        passengers = [{
+            "id": passenger_id,
+            "title": title,
+            "given_name": given_name,
+            "family_name": family_name,
+            "gender": gender,
+            "born_on": born_on,
+            "phone_number": phone_number,
+            "email": email,
+        }]
 
         result = await client.create_order(
             offer_id=offer_id,
-            passengers=formatted_passengers,
+            passengers=passengers,
             payment_type=payment_type,
-            payment_currency=payment_currency,
+            payment_currency=total_currency,
+            payment_amount=total_amount,
         )
 
         order = result.get("data", {})
